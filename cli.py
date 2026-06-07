@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from token_dashboard.db import init_db, default_db_path, overview_totals
+from token_dashboard.burn import rebuild_daily_usage
+from token_dashboard.codex_scanner import scan_codex_dir
 from token_dashboard.scanner import scan_dir
 from token_dashboard.tips import all_tips
 
@@ -16,12 +18,30 @@ def _db_path(args) -> str:
     return args.db or os.environ.get("TOKEN_DASHBOARD_DB") or str(default_db_path())
 
 
-def _projects(args) -> str:
+def _projects(args) -> list[str]:
+    if getattr(args, "projects_dir", None):
+        roots = args.projects_dir if isinstance(args.projects_dir, (list, tuple)) else [args.projects_dir]
+        return [r for r in roots if r]
+
+    env = os.environ.get("TOKEN_DASHBOARD_PROJECTS_DIRS") or os.environ.get("CLAUDE_PROJECTS_DIR")
+    if env:
+        return [r for r in env.split(os.pathsep) if r]
+    return [str(Path.home() / ".claude" / "projects")]
+
+
+def _codex_sessions(args) -> str:
     return (
-        args.projects_dir
-        or os.environ.get("CLAUDE_PROJECTS_DIR")
-        or str(Path.home() / ".claude" / "projects")
+        getattr(args, "codex_sessions_dir", None)
+        or os.environ.get("CODEX_SESSIONS_DIR")
+        or str(Path.home() / ".codex" / "sessions")
     )
+
+
+def _refresh_usage(args, db: str) -> dict:
+    claude = scan_dir(_projects(args), db)
+    codex = scan_codex_dir(_codex_sessions(args), db)
+    burn = rebuild_daily_usage(db)
+    return {"claude": claude, "codex": codex, "burn": burn}
 
 
 def _today_range():
@@ -34,8 +54,15 @@ def _today_range():
 def cmd_scan(args):
     db = _db_path(args)
     init_db(db)
-    n = scan_dir(_projects(args), db)
-    print(f"Token Dashboard: scanned {n['files']} files, {n['messages']} messages, {n['tools']} tool calls")
+    n = _refresh_usage(args, db)
+    claude = n["claude"]
+    codex = n["codex"]
+    print(
+        "Token Dashboard: "
+        f"Claude scanned {claude['files']} files, {claude['messages']} messages, "
+        f"{claude['tools']} tool calls; "
+        f"Codex scanned {codex['files']} files, {codex['sessions']} sessions"
+    )
 
 
 def cmd_today(args):
@@ -74,7 +101,7 @@ def cmd_dashboard(args):
     db = _db_path(args)
     init_db(db)
     if not args.no_scan:
-        scan_dir(_projects(args), db)
+        _refresh_usage(args, db)
     from token_dashboard.server import run
 
     host = os.environ.get("HOST", "127.0.0.1")
@@ -83,13 +110,14 @@ def cmd_dashboard(args):
     if not args.no_open:
         webbrowser.open(url)
     print(f"Token Dashboard listening on {url}")
-    run(host, port, db, _projects(args))
+    run(host, port, db, _projects(args), _codex_sessions(args))
 
 
 def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--db", help="SQLite path (default ~/.claude/token-dashboard.db)")
-    common.add_argument("--projects-dir", help="JSONL root (default ~/.claude/projects)")
+    common.add_argument("--projects-dir", action="append", help="JSONL root; repeat to scan multiple roots (default ~/.claude/projects)")
+    common.add_argument("--codex-sessions-dir", help="Codex JSONL root (default ~/.codex/sessions)")
 
     p = argparse.ArgumentParser(prog="token-dashboard", description="Local Claude Code usage dashboard", parents=[common])
     sub = p.add_subparsers(dest="cmd", required=True)

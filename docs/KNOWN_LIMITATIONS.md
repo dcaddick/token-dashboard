@@ -24,6 +24,21 @@ If a transcript references a model ID not in `pricing.json` (e.g. a future snaps
 
 The first `python3 cli.py scan` on a heavy user's machine can read tens of MB across hundreds of JSONLs. Subsequent scans are incremental (mtime + byte-offset tracking in the `files` table), so they're fast.
 
+## Token Burn normalization and day attribution
+
+The Burn tab uses exact local counters for Claude Code and Codex, but their
+cache fields have different meanings. **Workload** represents total model
+processing; **Billable** is a provider-normalized token comparison that removes
+Claude cache reads and Codex cached input. It is not a universal cost estimate.
+
+Codex writes cumulative usage snapshots per session. The dashboard uses the
+final complete snapshot and attributes the whole session to that event's local
+calendar day. A session spanning midnight is not split across days.
+
+ChatGPT ingestion is not implemented yet. The provider-neutral data model can
+support it later, including estimated usage where exact local counters are
+unavailable.
+
 ## Running two dashboards against the same DB
 
 Both will fight over the SQLite file and you'll see inconsistent numbers and occasional `database is locked` errors. Only run one at a time. If you want to view the dashboard from a second device, use `HOST=0.0.0.0` on the one running machine and point the second device's browser at it.

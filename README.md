@@ -43,20 +43,24 @@ Leave it running; it re-scans every 30 seconds and pushes updates live. Stop wit
 
 ## Where the data comes from
 
-Claude Code writes one JSONL file per session here:
+The dashboard reads local Claude Code and Codex session JSONLs:
 
-| OS | Path |
+| Provider | Default path |
 |---|---|
-| macOS / Linux | `~/.claude/projects/<project-slug>/<session-id>.jsonl` |
-| Windows | `C:\Users\<you>\.claude\projects\<project-slug>\<session-id>.jsonl` |
+| Claude Code | `~/.claude/projects/<project-slug>/<session-id>.jsonl` |
+| Codex | `~/.codex/sessions/**/*.jsonl` |
 
 The dashboard never modifies those files — it only reads them and keeps a local SQLite cache at `~/.claude/token-dashboard.db`.
 
-To point at a different location:
+To point at a different location, or to combine multiple transcript folders in one dashboard view:
 
 ```bash
-python3 cli.py dashboard --projects-dir /path/to/projects --db /path/to/cache.db
+python3 cli.py dashboard --projects-dir /path/to/claude-projects --projects-dir /path/to/other-model-projects --db /path/to/cache.db
 ```
+
+You can also set `TOKEN_DASHBOARD_PROJECTS_DIRS` to a `PATH`-style list of roots.
+To override the Codex source, use `--codex-sessions-dir /path/to/codex-sessions`
+or set `CODEX_SESSIONS_DIR`.
 
 ### Environment variables
 
@@ -64,7 +68,9 @@ python3 cli.py dashboard --projects-dir /path/to/projects --db /path/to/cache.db
 |---|---|---|
 | `PORT` | `8080` | Port the local web server listens on |
 | `HOST` | `127.0.0.1` | Bind address. Keep the default. Setting `0.0.0.0` exposes your entire prompt history to anyone on your local network — don't do this on any network you don't fully control (no coffee-shop Wi-Fi, no coworking spaces). |
-| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Where to scan for session JSONL files |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Default single root for session JSONL files |
+| `TOKEN_DASHBOARD_PROJECTS_DIRS` | unset | Optional PATH-style list of extra roots to scan together |
+| `CODEX_SESSIONS_DIR` | `~/.codex/sessions` | Root containing Codex session JSONLs |
 | `TOKEN_DASHBOARD_DB` | `~/.claude/token-dashboard.db` | SQLite cache location |
 
 Pricing lives in [`pricing.json`](pricing.json). Edit it directly if model prices change or to add a new plan.
@@ -85,11 +91,12 @@ python3 cli.py dashboard --no-scan   # skip the initial scan (use cached DB only
 
 Change the port: `PORT=9000 python3 cli.py dashboard`.
 
-## The 7 tabs
+## The 8 tabs
 
 The dashboard is a single page with a hash-router tab bar across the top. Each tab is backed by its own JSON API under `/api/`:
 
 - **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
+- **Burn** — daily Claude Code and Codex token volume, weekly trends, provider heatmap lanes, and peak days. Switch between **Workload** (all model processing) and **Billable** (provider-normalized usage excluding cache reads/cached input).
 - **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
 - **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
 - **Projects** — per-project comparison: tokens, session counts, and which files were touched most.
@@ -115,7 +122,7 @@ Claude Code writes each assistant response 2–3 times to disk while it streams 
 
 ## Privacy
 
-Nothing leaves your machine. No telemetry. No remote calls for your data. The browser fetches its JSON from `127.0.0.1`, and all JS/CSS/fonts are served from that same local server — ECharts is vendored into `web/`, and the UI falls back to system fonts rather than pulling from a font CDN. If you want to verify: `grep -r "https://" token_dashboard/ web/` — you'll find nothing.
+Nothing leaves your machine. No telemetry. No remote calls for your data. The Burn API exposes aggregated token counters and dates, not Codex or Claude prompt text. The browser fetches its JSON from `127.0.0.1`, and all JS/CSS/fonts are served from that same local server — ECharts is vendored into `web/`, and the UI falls back to system fonts rather than pulling from a font CDN. If you want to verify: `grep -r "https://" token_dashboard/ web/` — you'll find nothing.
 
 ## Tech stack
 

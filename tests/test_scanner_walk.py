@@ -45,6 +45,29 @@ class WalkTests(unittest.TestCase):
         n2 = scan_dir(self.proj_root, self.db)
         self.assertEqual(n2["messages"], 1)
 
+    def test_scan_accepts_multiple_roots(self):
+        other_root = os.path.join(self.tmp, "extra-projects")
+        other_dir = os.path.join(other_root, "other-model")
+        os.makedirs(other_dir)
+        src = os.path.join(FIXTURE_DIR, "sample_session.jsonl")
+        dst = os.path.join(other_dir, "s2.jsonl")
+        shutil.copy(src, dst)
+        with open(dst, "r", encoding="utf-8") as f:
+            text = f.read()
+        text = text.replace('"uuid":"u1"', '"uuid":"u1-extra"')
+        text = text.replace('"uuid":"a1"', '"uuid":"a1-extra"')
+        text = text.replace('"uuid":"u2"', '"uuid":"u2-extra"')
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        n = scan_dir([self.proj_root, other_root], self.db)
+
+        self.assertEqual(n["messages"], 6)
+        self.assertEqual(n["tools"], 4)
+        with sqlite3.connect(self.db) as c:
+            count = c.execute("SELECT COUNT(*) FROM messages WHERE project_slug IN ('C--work-sample', 'other-model')").fetchone()[0]
+        self.assertEqual(count, 6)
+
 
 if __name__ == "__main__":
     unittest.main()

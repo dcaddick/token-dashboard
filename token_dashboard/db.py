@@ -72,6 +72,42 @@ CREATE TABLE IF NOT EXISTS dismissed_tips (
   tip_key       TEXT PRIMARY KEY,
   dismissed_at  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS provider_sessions (
+  provider                TEXT NOT NULL,
+  session_id              TEXT NOT NULL,
+  path                    TEXT NOT NULL,
+  mtime                   REAL NOT NULL,
+  bytes_read              INTEGER NOT NULL,
+  day                     TEXT NOT NULL,
+  input_tokens            INTEGER NOT NULL DEFAULT 0,
+  output_tokens           INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_create_tokens     INTEGER NOT NULL DEFAULT 0,
+  reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+  accuracy                TEXT NOT NULL DEFAULT 'exact',
+  updated_at              REAL NOT NULL,
+  PRIMARY KEY (provider, session_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_sessions_path
+  ON provider_sessions(provider, path);
+
+CREATE TABLE IF NOT EXISTS daily_provider_usage (
+  provider                TEXT NOT NULL,
+  day                     TEXT NOT NULL,
+  input_tokens            INTEGER NOT NULL DEFAULT 0,
+  output_tokens           INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_create_tokens     INTEGER NOT NULL DEFAULT 0,
+  reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+  workload_tokens         INTEGER NOT NULL DEFAULT 0,
+  billable_tokens         INTEGER NOT NULL DEFAULT 0,
+  accuracy                TEXT NOT NULL DEFAULT 'exact',
+  updated_at              REAL NOT NULL,
+  PRIMARY KEY (provider, day)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_provider_usage_day
+  ON daily_provider_usage(day);
 """
 
 

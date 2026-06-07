@@ -242,36 +242,44 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     return {"messages": msgs, "tools": tools, "end_offset": end_offset}
 
 
-def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
-    root = Path(projects_root)
+def scan_dir(projects_root: Union[str, Path, List[Union[str, Path]]], db_path: Union[str, Path]) -> dict:
+    roots = [Path(r) for r in ([projects_root] if isinstance(projects_root, (str, Path)) else list(projects_root))]
     totals = {"messages": 0, "tools": 0, "files": 0}
-    if not root.is_dir():
-        return totals
+    seen_files = set()
     with connect(db_path) as conn:
-        for p in root.rglob("*.jsonl"):
-            try:
-                stat = p.stat()
-            except OSError:
+        for root in roots:
+            if not root.exists() or not root.is_dir():
                 continue
-            row = conn.execute(
-                "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
-            ).fetchone()
-            offset = 0
-            if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
-                continue
-            if row and stat.st_size > row["bytes_read"]:
-                offset = row["bytes_read"]
-            slug = _project_slug(p, root)
-            sub = scan_file(p, slug, conn, start_byte=offset)
-            # Persist the byte offset of the last fully-parsed line (not
-            # st_size) so a partial line mid-flush is retried on the next
-            # scan instead of being skipped over.
-            conn.execute(
-                "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
-                (str(p), stat.st_mtime, sub["end_offset"], time.time()),
-            )
-            totals["messages"] += sub["messages"]
-            totals["tools"]    += sub["tools"]
-            totals["files"]    += 1
+            for p in sorted(root.rglob("*.jsonl")):
+                key = str(p)
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+
+                try:
+                    stat = p.stat()
+                except OSError:
+                    continue
+
+                row = conn.execute(
+                    "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
+                ).fetchone()
+                offset = 0
+                if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
+                    continue
+                if row and stat.st_size > row["bytes_read"]:
+                    offset = row["bytes_read"]
+                slug = _project_slug(p, root)
+                sub = scan_file(p, slug, conn, start_byte=offset)
+                # Persist the byte offset of the last fully-parsed line (not
+                # st_size) so a partial line mid-flush is retried on the next
+                # scan instead of being skipped over.
+                conn.execute(
+                    "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
+                    (str(p), stat.st_mtime, sub["end_offset"], time.time()),
+                )
+                totals["messages"] += sub["messages"]
+                totals["tools"]    += sub["tools"]
+                totals["files"]    += 1
         conn.commit()
     return totals

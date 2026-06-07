@@ -11,20 +11,47 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from .db import (
-    overview_totals, expensive_prompts, project_summary,
+    connect, overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown,
 )
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_dir
+from .codex_scanner import scan_codex_dir
+from .burn import burn_summary, rebuild_daily_usage
 from .skills import cached_catalog
 
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 
-EVENTS: "queue.Queue[dict]" = queue.Queue()
+REFRESH_LOCK = threading.Lock()
+
+
+class EventBroadcaster:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._subscribers = set()
+
+    def subscribe(self) -> "queue.Queue[dict]":
+        subscriber = queue.Queue()
+        with self._lock:
+            self._subscribers.add(subscriber)
+        return subscriber
+
+    def unsubscribe(self, subscriber: "queue.Queue[dict]") -> None:
+        with self._lock:
+            self._subscribers.discard(subscriber)
+
+    def publish(self, event: dict) -> None:
+        with self._lock:
+            subscribers = tuple(self._subscribers)
+        for subscriber in subscribers:
+            subscriber.put(event)
+
+
+EVENTS = EventBroadcaster()
 
 MAX_POST_BYTES = 1_000_000  # 1 MB — we only accept tiny JSON bodies (plan, tip key)
 MAX_LIMIT = 1000
@@ -68,8 +95,44 @@ def _serve_static(handler, rel: str) -> None:
     handler.wfile.write(body)
 
 
-def build_handler(db_path: str, projects_dir: str):
+def _usage_snapshot(db_path: str) -> tuple:
+    with connect(db_path) as conn:
+        return tuple(
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT provider, day, workload_tokens, billable_tokens, accuracy
+                  FROM daily_provider_usage
+                 ORDER BY provider, day
+                """
+            )
+        )
+
+
+def _refresh_usage(db_path: str, projects_dir, codex_sessions_dir) -> dict:
+    with REFRESH_LOCK:
+        before = _usage_snapshot(db_path)
+        claude = scan_dir(projects_dir, db_path)
+        codex = scan_codex_dir(codex_sessions_dir, db_path)
+        burn = rebuild_daily_usage(db_path)
+        return {
+            "claude": claude,
+            "codex": codex,
+            "burn": burn,
+            "usage_changed": before != _usage_snapshot(db_path),
+        }
+
+
+def _has_meaningful_changes(result: dict) -> bool:
+    return bool(
+        result.get("usage_changed")
+        or result.get("claude", {}).get("messages", 0) > 0
+    )
+
+
+def build_handler(db_path: str, projects_dir, codex_sessions_dir=None):
     pricing = load_pricing(PRICING_JSON)
+    codex_sessions_dir = codex_sessions_dir or str(Path.home() / ".codex" / "sessions")
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -120,6 +183,9 @@ def build_handler(db_path: str, projects_dir: str):
                 ))
             if path == "/api/daily":
                 return _send_json(self, daily_token_breakdown(db_path, since, until))
+            if path == "/api/burn":
+                metric = qs.get("metric", ["workload"])[0]
+                return _send_json(self, burn_summary(db_path, since, until, metric))
             if path == "/api/skills":
                 rows = skill_breakdown(db_path, since, until)
                 catalog = cached_catalog()
@@ -142,7 +208,7 @@ def build_handler(db_path: str, projects_dir: str):
             if path == "/api/plan":
                 return _send_json(self, {"plan": get_plan(db_path), "pricing": pricing})
             if path == "/api/scan":
-                n = scan_dir(projects_dir, db_path)
+                n = _refresh_usage(db_path, projects_dir, codex_sessions_dir)
                 return _send_json(self, n)
             if path == "/api/stream":
                 self.send_response(200)
@@ -150,17 +216,21 @@ def build_handler(db_path: str, projects_dir: str):
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                while True:
-                    try:
-                        evt = EVENTS.get(timeout=15)
-                        chunk = f"data: {json.dumps(evt, default=str)}\n\n".encode()
-                    except queue.Empty:
-                        chunk = b": ping\n\n"
-                    try:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
+                subscriber = EVENTS.subscribe()
+                try:
+                    while True:
+                        try:
+                            evt = subscriber.get(timeout=15)
+                            chunk = f"data: {json.dumps(evt, default=str)}\n\n".encode()
+                        except queue.Empty:
+                            chunk = b": ping\n\n"
+                        try:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                finally:
+                    EVENTS.unsubscribe(subscriber)
             self.send_response(404)
             self.end_headers()
 
@@ -190,19 +260,26 @@ def build_handler(db_path: str, projects_dir: str):
     return H
 
 
-def _scan_loop(db_path: str, projects_dir: str, interval: float = 30.0):
+def _scan_loop(db_path: str, projects_dir, interval: float = 30.0, codex_sessions_dir=None):
+    codex_sessions_dir = codex_sessions_dir or str(Path.home() / ".codex" / "sessions")
     while True:
         try:
-            n = scan_dir(projects_dir, db_path)
-            if n["messages"] > 0:
-                EVENTS.put({"type": "scan", "n": n, "ts": time.time()})
+            n = _refresh_usage(db_path, projects_dir, codex_sessions_dir)
+            if _has_meaningful_changes(n):
+                EVENTS.publish({"type": "scan", "n": n, "ts": time.time()})
         except Exception as e:
-            EVENTS.put({"type": "error", "message": str(e)})
+            EVENTS.publish({"type": "error", "message": str(e)})
         time.sleep(interval)
 
 
-def run(host: str, port: int, db_path: str, projects_dir: str):
-    threading.Thread(target=_scan_loop, args=(db_path, projects_dir), daemon=True).start()
-    H = build_handler(db_path, projects_dir)
+def run(host: str, port: int, db_path: str, projects_dir, codex_sessions_dir=None):
+    codex_sessions_dir = codex_sessions_dir or str(Path.home() / ".codex" / "sessions")
+    H = build_handler(db_path, projects_dir, codex_sessions_dir)
     httpd = http.server.ThreadingHTTPServer((host, port), H)
+    threading.Thread(
+        target=_scan_loop,
+        args=(db_path, projects_dir),
+        kwargs={"codex_sessions_dir": codex_sessions_dir},
+        daemon=True,
+    ).start()
     httpd.serve_forever()

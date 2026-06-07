@@ -30,9 +30,29 @@ const TOOLTIP = {
   padding: [8, 12],
 };
 
+const RESIZE_HANDLERS = new WeakMap();
+
+function disposeChart(el) {
+  const existing = echarts.getInstanceByDom(el);
+  if (!existing) return;
+  const resize = RESIZE_HANDLERS.get(existing);
+  if (resize) window.removeEventListener('resize', resize);
+  RESIZE_HANDLERS.delete(existing);
+  existing.dispose();
+}
+
+export function disposeCharts(root = document) {
+  root.querySelectorAll('[_echarts_instance_]').forEach(disposeChart);
+}
+
 function mount(el) {
+  disposeChart(el);
   const c = echarts.init(el, null, { renderer: 'svg' });
-  window.addEventListener('resize', () => c.resize());
+  const resize = () => {
+    if (!c.isDisposed()) c.resize();
+  };
+  RESIZE_HANDLERS.set(c, resize);
+  window.addEventListener('resize', resize);
   return c;
 }
 

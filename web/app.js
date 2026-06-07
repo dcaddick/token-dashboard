@@ -1,4 +1,5 @@
 // app.js — router, state, fetch helpers
+import { disposeCharts } from '/web/charts.js';
 
 export const $  = (sel, root=document) => root.querySelector(sel);
 export const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -17,9 +18,18 @@ export const fmt = {
     if (s.includes('opus'))   return 'opus';
     if (s.includes('sonnet')) return 'sonnet';
     if (s.includes('haiku'))  return 'haiku';
+    if (s.includes('mai'))    return 'mai';
     return '';
   },
-  modelShort: m => (m || '').replace('claude-', ''),
+  modelShort: m => {
+    const s = (m || '').replace(/^claude-/, '');
+    if (s.startsWith('mai-')) return 'MAI ' + s.slice(4).split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+    return s
+      .replace(/^(opus|sonnet|haiku)(?:-)?/i, (_, p) => p.charAt(0).toUpperCase() + p.slice(1) + ' ')
+      .replace(/-/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  },
   ts: t => (t || '').slice(0, 16).replace('T', ' '),
 };
 
@@ -33,6 +43,7 @@ export const state = { plan: 'api', pricing: null };
 
 const ROUTES = {
   '/overview': () => import('/web/routes/overview.js'),
+  '/burn':     () => import('/web/routes/burn.js'),
   '/prompts':  () => import('/web/routes/prompts.js'),
   '/sessions': () => import('/web/routes/sessions.js'),
   '/projects': () => import('/web/routes/projects.js'),
@@ -68,6 +79,7 @@ async function render() {
   setActiveTab(key);
   const loader = ROUTES[key] || ROUTES['/overview'];
   const mod = await loader();
+  disposeCharts($('#app'));
   $('#app').innerHTML = '';
   try {
     await mod.default($('#app'));

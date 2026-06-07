@@ -14,8 +14,30 @@ class InitDbTests(unittest.TestCase):
         init_db(self.db_path)
         with sqlite3.connect(self.db_path) as c:
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        expected = {"files", "messages", "tool_calls", "plan", "dismissed_tips"}
+        expected = {
+            "files", "messages", "tool_calls", "plan", "dismissed_tips",
+            "provider_sessions", "daily_provider_usage",
+        }
         self.assertTrue(expected.issubset(tables), f"Missing: {expected - tables}")
+
+    def test_provider_usage_keys_are_unique(self):
+        init_db(self.db_path)
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("""
+              INSERT INTO provider_sessions
+                (provider, session_id, path, mtime, bytes_read, day, input_tokens,
+                 output_tokens, cached_input_tokens, cache_create_tokens,
+                 reasoning_output_tokens, accuracy, updated_at)
+              VALUES ('codex','s','p',1,1,'2026-06-06',1,2,0,0,0,'exact',1)
+            """)
+            with self.assertRaises(sqlite3.IntegrityError):
+                c.execute("""
+                  INSERT INTO provider_sessions
+                    (provider, session_id, path, mtime, bytes_read, day, input_tokens,
+                     output_tokens, cached_input_tokens, cache_create_tokens,
+                     reasoning_output_tokens, accuracy, updated_at)
+                  VALUES ('codex','s','p2',2,2,'2026-06-07',1,2,0,0,0,'exact',2)
+                """)
 
     def test_init_is_idempotent(self):
         init_db(self.db_path)

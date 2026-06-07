@@ -83,11 +83,11 @@ export default async function (root) {
     <details class="card glossary" style="margin-top:16px">
       <summary><h3 style="display:inline-block;margin:0">What do these numbers mean?</h3><span class="muted" style="font-size:12px">— click to expand</span></summary>
       <dl>
-        <dt>Session</dt><dd>One run of Claude Code (from <code>claude</code> to exit). Each session is a single <code>.jsonl</code> file.</dd>
-        <dt>Turn</dt><dd>One message you sent to Claude. Each turn triggers a response (possibly with tool calls in between).</dd>
-        <dt>Input tokens</dt><dd>The new text you (and tool results) sent to Claude this turn. Billed at the full input rate.</dd>
-        <dt>Output tokens</dt><dd>The text Claude wrote back. Billed at the highest rate — usually the biggest cost driver per turn.</dd>
-        <dt>Cache read</dt><dd>Tokens Claude re-used from a cache (your CLAUDE.md, previously-read files, the conversation so far). ~10× cheaper than fresh input. High cache-read counts = good cost hygiene.</dd>
+        <dt>Session</dt><dd>One recorded transcript run from your local JSONL logs. Each session is a single <code>.jsonl</code> file.</dd>
+        <dt>Turn</dt><dd>One message in that transcript. Each turn can trigger a model response and tool calls.</dd>
+        <dt>Input tokens</dt><dd>The new text you (and tool results) sent to the model this turn. Billed at the full input rate.</dd>
+        <dt>Output tokens</dt><dd>The text the model wrote back. Billed at the highest rate — usually the biggest cost driver per turn.</dd>
+        <dt>Cache read</dt><dd>Tokens the model re-used from a cache (such as your prompt/context data). ~10× cheaper than fresh input. High cache-read counts = good cost hygiene.</dd>
         <dt>Cache create</dt><dd>Writing something into the cache for the first time. One-time cost; pays off on the next turn.</dd>
         <dt>Billable tokens</dt><dd>Input + Output + Cache create. Cache reads are billed separately (and much cheaper).</dd>
       </dl>
@@ -96,12 +96,12 @@ export default async function (root) {
     <div class="row cols-2" style="margin-top:16px">
       <div class="card">
         <h3>Your daily work</h3>
-        <p class="muted" style="margin:-4px 0 10px;font-size:12px">Tokens you paid for: what you sent (<b>input</b>), what Claude wrote (<b>output</b>), and what got stored for re-use (<b>cache create</b>).</p>
+        <p class="muted" style="margin:-4px 0 10px;font-size:12px">Tokens you paid for: what you sent (<b>input</b>), what the model wrote (<b>output</b>), and what got stored for re-use (<b>cache create</b>).</p>
         <div id="ch-daily-billable" style="height:260px"></div>
       </div>
       <div class="card">
         <h3>Daily cache reads</h3>
-        <p class="muted" style="margin:-4px 0 10px;font-size:12px"><b>Cache reads</b> are cheap re-uses of things Claude already saw (like your CLAUDE.md). They cost ~10× less than regular input tokens — high numbers here are a good thing.</p>
+        <p class="muted" style="margin:-4px 0 10px;font-size:12px"><b>Cache reads</b> are cheap re-uses of prompt or context data the model already saw. They cost ~10× less than regular input tokens — high numbers here are a good thing.</p>
         <div id="ch-daily-cache" style="height:260px"></div>
       </div>
     </div>
@@ -110,7 +110,7 @@ export default async function (root) {
       <div class="card"><h3>Tokens by project</h3><div id="ch-projects" style="height:320px"></div></div>
       <div class="card">
         <h3>Token usage by model</h3>
-        <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens per Claude model.</p>
+        <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens by model.</p>
         <div id="ch-model" style="height:300px"></div>
       </div>
     </div>
