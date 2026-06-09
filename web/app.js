@@ -30,6 +30,12 @@ export const fmt = {
       .replace(/\s+/g, ' ')
       .trim();
   },
+  burnModel: (provider, model) => {
+    if (model === `unknown-${provider}`) {
+      return `Unknown ${provider.charAt(0).toUpperCase() + provider.slice(1)}`;
+    }
+    return fmt.modelShort(model);
+  },
   ts: t => (t || '').slice(0, 16).replace('T', ' '),
 };
 

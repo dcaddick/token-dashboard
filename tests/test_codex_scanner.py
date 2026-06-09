@@ -8,7 +8,11 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from token_dashboard.codex_scanner import parse_codex_session, scan_codex_dir
+from token_dashboard.codex_scanner import (
+    parse_codex_model_usage,
+    parse_codex_session,
+    scan_codex_dir,
+)
 from token_dashboard.db import init_db
 
 
@@ -30,6 +34,14 @@ def _token_event(timestamp, input_tokens, cached_input_tokens, output_tokens, re
                 }
             },
         },
+    }
+
+
+def _turn_context(timestamp, model):
+    return {
+        "timestamp": timestamp,
+        "type": "turn_context",
+        "payload": {"model": model},
     }
 
 
@@ -98,6 +110,67 @@ class ParseCodexSessionTests(unittest.TestCase):
         ).astimezone().date().isoformat()
         self.assertEqual(row["day"], expected)
 
+    def test_parse_attributes_cumulative_deltas_to_active_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            _write_complete_lines(path, [
+                _turn_context("2026-06-06T07:00:00Z", "model-a"),
+                _token_event("2026-06-06T07:01:00Z", 100, 40, 10, 2),
+                _turn_context("2026-06-06T07:02:00Z", "model-b"),
+                _token_event("2026-06-06T07:03:00Z", 250, 100, 25, 5),
+            ])
+            rows = parse_codex_model_usage(path)
+        self.assertEqual(rows, [
+            {
+                "model": "model-a", "day": "2026-06-06",
+                "input_tokens": 100, "cached_input_tokens": 40,
+                "output_tokens": 10, "reasoning_output_tokens": 2,
+            },
+            {
+                "model": "model-b", "day": "2026-06-06",
+                "input_tokens": 150, "cached_input_tokens": 60,
+                "output_tokens": 15, "reasoning_output_tokens": 3,
+            },
+        ])
+
+    def test_parse_splits_deltas_across_local_days(self):
+        first = "2026-06-06T15:00:00Z"
+        second = "2026-06-06T20:30:00Z"
+        if datetime.fromisoformat(first.replace("Z", "+00:00")).astimezone().date() == \
+                datetime.fromisoformat(second.replace("Z", "+00:00")).astimezone().date():
+            self.skipTest("timestamps do not cross a local-day boundary here")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            _write_complete_lines(path, [
+                _turn_context(first, "model-a"),
+                _token_event(first, 10, 2, 1, 0),
+                _token_event(second, 25, 5, 3, 1),
+            ])
+            rows = parse_codex_model_usage(path)
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0]["day"], rows[1]["day"])
+
+    def test_parse_clamps_negative_reset_deltas_to_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            _write_complete_lines(path, [
+                _turn_context("2026-06-06T07:00:00Z", "model-a"),
+                _token_event("2026-06-06T07:01:00Z", 100, 40, 10, 2),
+                _token_event("2026-06-06T07:02:00Z", 10, 4, 1, 0),
+            ])
+            rows = parse_codex_model_usage(path)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["input_tokens"], 100)
+
+    def test_parse_uses_unknown_codex_before_first_model_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            _write_complete_lines(path, [
+                _token_event("2026-06-06T07:01:00Z", 10, 2, 1, 0),
+            ])
+            rows = parse_codex_model_usage(path)
+        self.assertEqual(rows[0]["model"], "unknown-codex")
+
 
 class ScanCodexDirTests(unittest.TestCase):
     def setUp(self):
@@ -154,6 +227,52 @@ class ScanCodexDirTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(rows, [("codex-session-1", 400, 40)])
 
+    def test_scan_stores_and_replaces_model_contributions(self):
+        _write_complete_lines(self.session, [
+            {"type": "session_meta", "payload": {"id": "codex-session-1"}},
+            _turn_context("2026-06-06T07:00:00Z", "model-a"),
+            _token_event("2026-06-06T07:01:00Z", 100, 40, 10, 2),
+            _turn_context("2026-06-06T07:02:00Z", "model-b"),
+            _token_event("2026-06-06T07:03:00Z", 250, 100, 25, 5),
+        ])
+        scan_codex_dir(self.root, self.db)
+        with sqlite3.connect(self.db) as c:
+            rows = c.execute("""
+              SELECT model, input_tokens FROM codex_model_usage
+               ORDER BY model
+            """).fetchall()
+        self.assertEqual(rows, [("model-a", 100), ("model-b", 150)])
+
+        _write_complete_lines(self.session, [
+            {"type": "session_meta", "payload": {"id": "codex-session-1"}},
+            _turn_context("2026-06-06T07:00:00Z", "model-c"),
+            _token_event("2026-06-06T07:01:00Z", 50, 10, 5, 1),
+        ])
+        future = time.time() + 10
+        os.utime(self.session, (future, future))
+        scan_codex_dir(self.root, self.db)
+        with sqlite3.connect(self.db) as c:
+            rows = c.execute("""
+              SELECT model, input_tokens FROM codex_model_usage
+               ORDER BY model
+            """).fetchall()
+        self.assertEqual(rows, [("model-c", 50)])
+
+    def test_scan_backfills_missing_model_contributions_for_unchanged_session(self):
+        scan_codex_dir(self.root, self.db)
+        with sqlite3.connect(self.db) as c:
+            c.execute("DELETE FROM codex_model_usage")
+            c.commit()
+
+        result = scan_codex_dir(self.root, self.db)
+
+        self.assertEqual(result, {"files": 1, "sessions": 1})
+        with sqlite3.connect(self.db) as c:
+            count = c.execute(
+                "SELECT COUNT(*) FROM codex_model_usage"
+            ).fetchone()[0]
+        self.assertGreater(count, 0)
+
     def test_scan_removes_session_when_source_file_is_deleted(self):
         scan_codex_dir(self.root, self.db)
         os.remove(self.session)
@@ -166,6 +285,11 @@ class ScanCodexDirTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM provider_sessions WHERE provider='codex'"
             ).fetchone()[0]
         self.assertEqual(count, 0)
+        with sqlite3.connect(self.db) as c:
+            usage_count = c.execute(
+                "SELECT COUNT(*) FROM codex_model_usage"
+            ).fetchone()[0]
+        self.assertEqual(usage_count, 0)
 
     def test_duplicate_session_ids_choose_stable_path_and_skip_next_scan(self):
         winner = os.path.join(self.root, "a-winner.jsonl")

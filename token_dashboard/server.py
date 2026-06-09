@@ -101,9 +101,9 @@ def _usage_snapshot(db_path: str) -> tuple:
             tuple(row)
             for row in conn.execute(
                 """
-                SELECT provider, day, workload_tokens, billable_tokens, accuracy
+                SELECT provider, model, day, workload_tokens, billable_tokens, accuracy
                   FROM daily_provider_usage
-                 ORDER BY provider, day
+                 ORDER BY provider, model, day
                 """
             )
         )
@@ -185,7 +185,11 @@ def build_handler(db_path: str, projects_dir, codex_sessions_dir=None):
                 return _send_json(self, daily_token_breakdown(db_path, since, until))
             if path == "/api/burn":
                 metric = qs.get("metric", ["workload"])[0]
-                return _send_json(self, burn_summary(db_path, since, until, metric))
+                group = qs.get("group", ["provider"])[0]
+                return _send_json(
+                    self,
+                    burn_summary(db_path, since, until, metric=metric, group=group),
+                )
             if path == "/api/skills":
                 rows = skill_breakdown(db_path, since, until)
                 catalog = cached_catalog()

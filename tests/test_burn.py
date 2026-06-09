@@ -30,6 +30,7 @@ class BurnTests(unittest.TestCase):
         cache_read_tokens=0,
         cache_create_5m_tokens=0,
         cache_create_1h_tokens=0,
+        model=None,
     ):
         with connect(self.db) as c:
             c.execute(
@@ -37,8 +38,8 @@ class BurnTests(unittest.TestCase):
                 INSERT INTO messages (
                   uuid, session_id, project_slug, type, timestamp,
                   input_tokens, output_tokens, cache_read_tokens,
-                  cache_create_5m_tokens, cache_create_1h_tokens
-                ) VALUES (?, 'session', 'project', ?, ?, ?, ?, ?, ?, ?)
+                  cache_create_5m_tokens, cache_create_1h_tokens, model
+                ) VALUES (?, 'session', 'project', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     uuid,
@@ -49,6 +50,7 @@ class BurnTests(unittest.TestCase):
                     cache_read_tokens,
                     cache_create_5m_tokens,
                     cache_create_1h_tokens,
+                    model,
                 ),
             )
             c.commit()
@@ -82,18 +84,37 @@ class BurnTests(unittest.TestCase):
                     reasoning_output_tokens,
                 ),
             )
+            c.execute(
+                """
+                INSERT INTO codex_model_usage (
+                  session_id, model, day, input_tokens, output_tokens,
+                  cached_input_tokens, reasoning_output_tokens, accuracy, updated_at
+                ) VALUES (?, 'unknown-codex', ?, ?, ?, ?, ?, 'exact', 1)
+                """,
+                (
+                    session_id,
+                    day,
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens,
+                    reasoning_output_tokens,
+                ),
+            )
             c.commit()
 
-    def _insert_daily(self, provider, day, workload, billable, accuracy="exact"):
+    def _insert_daily(
+        self, provider, day, workload, billable, accuracy="exact", model=None
+    ):
+        model = model or f"unknown-{provider}"
         with connect(self.db) as c:
             c.execute(
                 """
                 INSERT INTO daily_provider_usage (
-                  provider, day, workload_tokens, billable_tokens, accuracy,
+                  provider, model, day, workload_tokens, billable_tokens, accuracy,
                   updated_at
-                ) VALUES (?, ?, ?, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, ?, 1)
                 """,
-                (provider, day, workload, billable, accuracy),
+                (provider, model, day, workload, billable, accuracy),
             )
             c.commit()
 
@@ -185,6 +206,41 @@ class BurnTests(unittest.TestCase):
         self.assertEqual(rows["codex"]["workload_tokens"], 280)
         self.assertEqual(rows["codex"]["billable_tokens"], 180)
 
+    def test_rebuild_splits_claude_usage_by_model_and_preserves_mai(self):
+        timestamp = "2026-06-06T07:00:00Z"
+        self._insert_message("a", timestamp, input_tokens=10, model="claude-opus-4-7")
+        self._insert_message("b", timestamp, input_tokens=20, model="mai-1")
+        self._insert_message("c", timestamp, input_tokens=30, model=None)
+
+        rebuild_daily_usage(self.db)
+
+        with connect(self.db) as c:
+            rows = c.execute("""
+              SELECT model, workload_tokens FROM daily_provider_usage
+               WHERE provider='claude' ORDER BY model
+            """).fetchall()
+        self.assertEqual(
+            [(r["model"], r["workload_tokens"]) for r in rows],
+            [("claude-opus-4-7", 10), ("mai-1", 20), ("unknown-claude", 30)],
+        )
+
+    def test_rebuild_rolls_up_codex_model_contributions(self):
+        with connect(self.db) as c:
+            c.execute("""
+              INSERT INTO codex_model_usage (
+                session_id, model, day, input_tokens, output_tokens,
+                cached_input_tokens, reasoning_output_tokens, updated_at
+              ) VALUES ('s','gpt-5','2026-06-06',100,10,40,2,1)
+            """)
+            c.commit()
+        rebuild_daily_usage(self.db)
+        with connect(self.db) as c:
+            row = c.execute("""
+              SELECT model, workload_tokens, billable_tokens
+                FROM daily_provider_usage WHERE provider='codex'
+            """).fetchone()
+        self.assertEqual(tuple(row), ("gpt-5", 112, 72))
+
     def test_rebuild_groups_claude_by_local_day_not_utc_substring(self):
         timestamp = "2026-06-06T20:30:00Z"
         expected_day = local_day(timestamp)
@@ -241,17 +297,17 @@ class BurnTests(unittest.TestCase):
         self.assertEqual(result["total"], 415)
         self.assertEqual(result["peak_day"], {"day": "2026-06-06", "tokens": 415})
         self.assertEqual(
-            result["providers"],
+            result["lanes"],
             [
-                {"provider": "codex", "tokens": 280, "accuracy": "exact"},
-                {"provider": "claude", "tokens": 135, "accuracy": "exact"},
+                {"key": "provider:codex", "label": "OpenAI", "provider": "codex", "model": None, "tokens": 280, "accuracy": "exact"},
+                {"key": "provider:claude", "label": "Anthropic", "provider": "claude", "model": None, "tokens": 135, "accuracy": "exact"},
             ],
         )
         self.assertEqual(
             result["daily"],
             [
-                {"day": "2026-06-06", "provider": "claude", "tokens": 135},
-                {"day": "2026-06-06", "provider": "codex", "tokens": 280},
+                {"day": "2026-06-06", "lane": "provider:claude", "tokens": 135},
+                {"day": "2026-06-06", "lane": "provider:codex", "tokens": 280},
             ],
         )
         self.assertEqual(result["weekly"], [{"week": "2026-06-01", "tokens": 415}])
@@ -261,7 +317,7 @@ class BurnTests(unittest.TestCase):
                 {
                     "day": "2026-06-06",
                     "tokens": 415,
-                    "providers": {"claude": 135, "codex": 280},
+                    "lanes": {"provider:claude": 135, "provider:codex": 280},
                 }
             ],
         )
@@ -291,6 +347,20 @@ class BurnTests(unittest.TestCase):
         self.assertEqual(result["metric"], "workload")
         self.assertEqual(result["total"], 135)
 
+    def test_model_group_returns_model_lanes_without_changing_totals(self):
+        self._insert_daily("claude", "2026-06-06", 100, 80, model="claude-opus")
+        self._insert_daily("codex", "2026-06-06", 200, 120, model="gpt-5")
+        provider = burn_summary(self.db, group="provider")
+        model = burn_summary(self.db, group="model")
+        self.assertEqual(model["group"], "model")
+        self.assertEqual(provider["total"], model["total"])
+        self.assertEqual([lane["key"] for lane in model["lanes"]], [
+            "model:codex:gpt-5", "model:claude:claude-opus",
+        ])
+
+    def test_invalid_group_falls_back_to_provider(self):
+        self.assertEqual(burn_summary(self.db, group="invalid")["group"], "provider")
+
     def test_burn_summary_skips_malformed_stored_days(self):
         self._insert_daily("claude", "not-a-day", 999, 999)
         self._insert_daily("codex", "2026-06-06", 20, 10)
@@ -300,7 +370,7 @@ class BurnTests(unittest.TestCase):
         self.assertEqual(result["total"], 20)
         self.assertEqual(
             result["daily"],
-            [{"day": "2026-06-06", "provider": "codex", "tokens": 20}],
+            [{"day": "2026-06-06", "lane": "provider:codex", "tokens": 20}],
         )
         self.assertEqual(result["weekly"], [{"week": "2026-06-01", "tokens": 20}])
 
@@ -337,10 +407,11 @@ class BurnTests(unittest.TestCase):
             burn_summary(self.db),
             {
                 "metric": "workload",
+                "group": "provider",
                 "total": 0,
                 "day_to_date": 0,
                 "peak_day": {"day": None, "tokens": 0},
-                "providers": [],
+                "lanes": [],
                 "daily": [],
                 "weekly": [],
                 "peak_days": [],

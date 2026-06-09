@@ -94,6 +94,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_sessions_path
 
 CREATE TABLE IF NOT EXISTS daily_provider_usage (
   provider                TEXT NOT NULL,
+  model                   TEXT NOT NULL,
   day                     TEXT NOT NULL,
   input_tokens            INTEGER NOT NULL DEFAULT 0,
   output_tokens           INTEGER NOT NULL DEFAULT 0,
@@ -104,10 +105,26 @@ CREATE TABLE IF NOT EXISTS daily_provider_usage (
   billable_tokens         INTEGER NOT NULL DEFAULT 0,
   accuracy                TEXT NOT NULL DEFAULT 'exact',
   updated_at              REAL NOT NULL,
-  PRIMARY KEY (provider, day)
+  PRIMARY KEY (provider, model, day)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_provider_usage_day
   ON daily_provider_usage(day);
+
+CREATE TABLE IF NOT EXISTS codex_model_usage (
+  session_id              TEXT NOT NULL,
+  model                   TEXT NOT NULL,
+  day                     TEXT NOT NULL,
+  input_tokens            INTEGER NOT NULL DEFAULT 0,
+  output_tokens           INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_create_tokens     INTEGER NOT NULL DEFAULT 0,
+  reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+  accuracy                TEXT NOT NULL DEFAULT 'exact',
+  updated_at              REAL NOT NULL,
+  PRIMARY KEY (session_id, model, day)
+);
+CREATE INDEX IF NOT EXISTS idx_codex_model_usage_day
+  ON codex_model_usage(day);
 """
 
 
@@ -120,7 +137,52 @@ def init_db(path: Union[str, Path]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as c:
         _migrate_add_message_id(c)
+        _migrate_daily_usage_add_model(c)
         c.executescript(SCHEMA)
+
+
+def _migrate_daily_usage_add_model(conn) -> None:
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daily_provider_usage'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_provider_usage)")}
+    if "model" in cols:
+        return
+
+    conn.executescript("""
+      BEGIN IMMEDIATE;
+      ALTER TABLE daily_provider_usage RENAME TO daily_provider_usage_legacy;
+      CREATE TABLE daily_provider_usage (
+        provider                TEXT NOT NULL,
+        model                   TEXT NOT NULL,
+        day                     TEXT NOT NULL,
+        input_tokens            INTEGER NOT NULL DEFAULT 0,
+        output_tokens           INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+        cache_create_tokens     INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        workload_tokens         INTEGER NOT NULL DEFAULT 0,
+        billable_tokens         INTEGER NOT NULL DEFAULT 0,
+        accuracy                TEXT NOT NULL DEFAULT 'exact',
+        updated_at              REAL NOT NULL,
+        PRIMARY KEY (provider, model, day)
+      );
+      INSERT INTO daily_provider_usage (
+        provider, model, day, input_tokens, output_tokens, cached_input_tokens,
+        cache_create_tokens, reasoning_output_tokens, workload_tokens,
+        billable_tokens, accuracy, updated_at
+      )
+      SELECT provider, 'unknown-' || provider, day, input_tokens, output_tokens,
+             cached_input_tokens, cache_create_tokens, reasoning_output_tokens,
+             workload_tokens, billable_tokens, accuracy, updated_at
+        FROM daily_provider_usage_legacy;
+      DROP TABLE daily_provider_usage_legacy;
+      CREATE INDEX IF NOT EXISTS idx_daily_provider_usage_day
+        ON daily_provider_usage(day);
+      COMMIT;
+    """)
 
 
 def _migrate_add_message_id(conn) -> None:

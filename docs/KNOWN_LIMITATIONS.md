@@ -35,6 +35,13 @@ Codex writes cumulative usage snapshots per session. The dashboard uses the
 final complete snapshot and attributes the whole session to that event's local
 calendar day. A session spanning midnight is not split across days.
 
+For model lanes, Codex usage is attributed using the non-negative difference
+between consecutive cumulative snapshots. Each delta is assigned to the active
+model from the latest complete `turn_context` and to the token event's local
+day. Snapshot resets are clamped to zero. When model context is missing, exact
+usage remains visible under `Unknown Codex`; missing Claude model identities
+appear under `Unknown Claude`.
+
 ChatGPT ingestion is not implemented yet. The provider-neutral data model can
 support it later, including estimated usage where exact local counters are
 unavailable.

@@ -96,7 +96,7 @@ Change the port: `PORT=9000 python3 cli.py dashboard`.
 The dashboard is a single page with a hash-router tab bar across the top. Each tab is backed by its own JSON API under `/api/`:
 
 - **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
-- **Burn** — daily Claude Code and Codex token volume, weekly trends, provider heatmap lanes, and peak days. Switch between **Workload** (all model processing) and **Billable** (provider-normalized usage excluding cache reads/cached input).
+- **Burn** — daily Claude Code and Codex token volume, weekly trends, heatmap lanes, and peak days. Group exact usage by **Providers** or **Models**, and switch between **Workload** (all model processing) and **Billable** (provider-normalized usage excluding cache reads/cached input). Claude, MAI, and Codex model identities are preserved; missing identities remain visible in Unknown lanes.
 - **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
 - **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
 - **Projects** — per-project comparison: tokens, session counts, and which files were touched most.

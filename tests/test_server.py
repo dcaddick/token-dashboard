@@ -44,9 +44,9 @@ class ServerTests(unittest.TestCase):
             c.execute(
                 """
                 INSERT INTO daily_provider_usage (
-                  provider, day, workload_tokens, billable_tokens, accuracy,
+                  provider, model, day, workload_tokens, billable_tokens, accuracy,
                   updated_at
-                ) VALUES ('claude', '2026-04-19', 100, 20, 'exact', 1)
+                ) VALUES ('claude', 'claude-haiku-4-5', '2026-04-19', 100, 20, 'exact', 1)
                 """
             )
             c.commit()
@@ -101,11 +101,20 @@ class ServerTests(unittest.TestCase):
         body = json.loads(self._get("/api/burn?metric=billable"))
         self.assertEqual(body["metric"], "billable")
         self.assertEqual(body["total"], 20)
-        self.assertIn("providers", body)
+        self.assertIn("lanes", body)
 
     def test_burn_invalid_metric_falls_back(self):
         body = json.loads(self._get("/api/burn?metric=invalid"))
         self.assertEqual(body["metric"], "workload")
+
+    def test_burn_model_group_json(self):
+        body = json.loads(self._get("/api/burn?group=model"))
+        self.assertEqual(body["group"], "model")
+        self.assertIn("lanes", body)
+
+    def test_burn_invalid_group_falls_back(self):
+        body = json.loads(self._get("/api/burn?group=invalid"))
+        self.assertEqual(body["group"], "provider")
         self.assertEqual(body["total"], 100)
 
     def test_burn_passes_date_filters(self):
@@ -122,7 +131,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(body["usage_changed"])
         burn = json.loads(self._get("/api/burn"))
         self.assertEqual(
-            {row["provider"] for row in burn["providers"]},
+            {row["provider"] for row in burn["lanes"]},
             {"claude", "codex"},
         )
 

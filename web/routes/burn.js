@@ -11,17 +11,22 @@ const METRICS = [
   { key: 'workload', label: 'Workload' },
   { key: 'billable', label: 'Billable' },
 ];
+const GROUPS = [
+  { key: 'provider', label: 'Providers' },
+  { key: 'model', label: 'Models' },
+];
 const MAX_HEATMAP_DAYS = 365 * 5;
 
 function readState() {
   const query = new URLSearchParams((location.hash.split('?')[1] || ''));
   const range = RANGES.find(item => item.key === query.get('range')) || RANGES[2];
   const metric = METRICS.find(item => item.key === query.get('metric')) || METRICS[0];
-  return { range, metric };
+  const group = GROUPS.find(item => item.key === query.get('group')) || GROUPS[0];
+  return { range, metric, group };
 }
 
-function writeState(range, metric) {
-  const query = new URLSearchParams({ range, metric });
+function writeState(range, metric, group) {
+  const query = new URLSearchParams({ range, metric, group });
   location.hash = `#/burn?${query}`;
 }
 
@@ -56,6 +61,8 @@ function dateLabel(day) {
 }
 
 function providerLabel(provider) {
+  const labels = { claude: 'Anthropic', codex: 'OpenAI' };
+  if (labels[provider]) return labels[provider];
   return provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : '';
 }
 
@@ -86,7 +93,7 @@ function buildDays(start, end) {
   return days;
 }
 
-function laneMarkup({ name, total, accuracy, values, days, gridDays, maximum, metric }) {
+function laneMarkup({ name, detail, total, accuracy, values, days, gridDays, maximum, metric }) {
   const safeName = fmt.htmlSafe(name);
   const cells = gridDays.map(day => {
     if (!day) return '<span class="burn-cell outside" aria-hidden="true"></span>';
@@ -102,6 +109,7 @@ function laneMarkup({ name, total, accuracy, values, days, gridDays, maximum, me
       <div class="burn-lane-meta">
         <strong>${safeName}</strong>
         <span>${fmt.compact(total)}</span>
+        ${detail ? `<small>${fmt.htmlSafe(detail)}</small>` : ''}
         ${accuracy ? `<small>${fmt.htmlSafe(accuracyLabel(accuracy))}</small>` : '<small>combined providers</small>'}
       </div>
       <div class="burn-grid" style="--burn-weeks:${Math.max(1, gridDays.length / 7)}" aria-label="${safeName} daily token usage">
@@ -121,21 +129,22 @@ function calendarMarkup(summary, range, metric) {
   const trailing = Array((7 - ((leading.length + days.length) % 7)) % 7).fill(null);
   const gridDays = [...leading, ...days, ...trailing];
 
-  const byProvider = new Map(summary.providers.map(provider => [provider.provider, new Map()]));
+  const byLane = new Map(summary.lanes.map(lane => [lane.key, new Map()]));
   const totals = new Map();
   summary.daily.forEach(row => {
-    if (!byProvider.has(row.provider)) byProvider.set(row.provider, new Map());
-    byProvider.get(row.provider).set(row.day, row.tokens);
+    if (!byLane.has(row.lane)) byLane.set(row.lane, new Map());
+    byLane.get(row.lane).set(row.day, row.tokens);
     totals.set(row.day, (totals.get(row.day) || 0) + row.tokens);
   });
   const maximum = Math.max(0, ...totals.values(), ...summary.daily.map(row => row.tokens));
   const lanes = [
     { name: 'Total', total: summary.total, accuracy: null, values: totals },
-    ...summary.providers.map(provider => ({
-      name: providerLabel(provider.provider),
-      total: provider.tokens,
-      accuracy: provider.accuracy,
-      values: byProvider.get(provider.provider) || new Map(),
+    ...summary.lanes.map(lane => ({
+      name: lane.model ? fmt.burnModel(lane.provider, lane.model) : lane.label,
+      detail: lane.model ? providerLabel(lane.provider) : null,
+      total: lane.tokens,
+      accuracy: lane.accuracy,
+      values: byLane.get(lane.key) || new Map(),
     })),
   ];
 
@@ -158,9 +167,12 @@ function buildLane(options) {
 
 function peakRows(summary) {
   return summary.peak_days.map(item => {
-    const contributions = Object.entries(item.providers)
+    const labels = new Map(summary.lanes.map(lane => [
+      lane.key, lane.model ? fmt.burnModel(lane.provider, lane.model) : lane.label,
+    ]));
+    const contributions = Object.entries(item.lanes)
       .sort((a, b) => b[1] - a[1])
-      .map(([provider, tokens]) => `<span><b>${fmt.htmlSafe(providerLabel(provider))}</b> ${fmt.compact(tokens)}</span>`)
+      .map(([lane, tokens]) => `<span><b>${fmt.htmlSafe(labels.get(lane) || lane)}</b> ${fmt.compact(tokens)}</span>`)
       .join('');
     return `
       <tr>
@@ -172,9 +184,9 @@ function peakRows(summary) {
 }
 
 export default async function (root) {
-  const { range, metric } = readState();
+  const { range, metric, group } = readState();
   const since = range.days ? localIso(addDays(new Date(), -(range.days - 1))) : null;
-  const query = new URLSearchParams({ metric: metric.key });
+  const query = new URLSearchParams({ metric: metric.key, group: group.key });
   if (since) query.set('since', since);
   const summary = await api(`/api/burn?${query}`);
 
@@ -186,6 +198,7 @@ export default async function (root) {
         <p class="burn-accuracy-note"><b>Exact</b> usage comes from local token counters. <b>Estimated</b> usage is reconstructed where exact provider totals are unavailable.</p>
       </div>
       <div class="burn-controls">
+        ${controls(GROUPS, group.key, 'group', 'Burn grouping')}
         ${controls(METRICS, metric.key, 'metric', 'Token metric')}
         ${controls(RANGES, range.key, 'range', 'Date range')}
       </div>
@@ -198,7 +211,7 @@ export default async function (root) {
     </div>
 
     <section class="card burn-weekly">
-      <div class="burn-section-head"><div><h3>Weekly total</h3><span class="muted">${summary.providers.length} provider${summary.providers.length === 1 ? '' : 's'} in view</span></div></div>
+      <div class="burn-section-head"><div><h3>Weekly total</h3><span class="muted">${summary.lanes.length} ${group.label.toLowerCase()} lane${summary.lanes.length === 1 ? '' : 's'} in view</span></div></div>
       <div id="ch-burn-weekly"></div>
     </section>
 
@@ -221,11 +234,14 @@ export default async function (root) {
 
   root.querySelectorAll('[data-range]').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.range === range.key));
-    button.addEventListener('click', () => writeState(button.dataset.range, metric.key));
+    button.addEventListener('click', () => writeState(button.dataset.range, metric.key, group.key));
   });
   root.querySelectorAll('[data-metric]').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.metric === metric.key));
-    button.addEventListener('click', () => writeState(range.key, button.dataset.metric));
+    button.addEventListener('click', () => writeState(range.key, button.dataset.metric, group.key));
+  });
+  root.querySelectorAll('[data-group]').forEach(button => {
+    button.addEventListener('click', () => writeState(range.key, metric.key, button.dataset.group));
   });
 
   lineChart(document.getElementById('ch-burn-weekly'), {
